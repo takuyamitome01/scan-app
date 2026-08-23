@@ -3,11 +3,13 @@ workflows:
     name: iOS TestFlight Build
     max_build_duration: 60
     instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: codemagic-key
     environment:
-      groups:
-        - appstore_credentials
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: dev.k0950.scanapp
       vars:
-        BUNDLE_ID: "dev.k0950.scanapp"
         XCODE_WORKSPACE: "ios/Runner.xcworkspace"
         XCODE_SCHEME: "Runner"
       flutter: stable
@@ -17,7 +19,7 @@ workflows:
       events:
         - push
       branch_patterns:
-        - pattern: main
+        - pattern: master
           include: true
     scripts:
       - name: Set up code signing settings on Xcode project
