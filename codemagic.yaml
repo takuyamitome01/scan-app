@@ -43,8 +43,6 @@ workflows:
     publishing:
       app_store_connect:
         auth: integration
-        # Internal Testing groups do not require Apple's beta app review,
-        # so builds become available immediately after upload.
+        # Just upload; assigning the build to the Internal Testing group
+        # is done manually in App Store Connect (the API rejects it here).
         submit_to_testflight: false
-        beta_groups:
-          - "Internal Testers"
