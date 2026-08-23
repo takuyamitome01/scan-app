@@ -10,6 +10,7 @@ workflows:
         distribution_type: app_store
         bundle_identifier: dev.k0950.scanapp
       vars:
+        BUNDLE_ID: "dev.k0950.scanapp"
         XCODE_WORKSPACE: "ios/Runner.xcworkspace"
         XCODE_SCHEME: "Runner"
       flutter: stable
@@ -31,9 +32,15 @@ workflows:
       - name: Install pods
         script: |
           find . -name "Podfile" -execdir pod install \;
+      - name: Determine next build number
+        script: |
+          #!/bin/sh
+          set -e
+          LATEST_BUILD_NUMBER=$(app-store-connect get-latest-testflight-build-number "$BUNDLE_ID" || echo 0)
+          echo "NEW_BUILD_NUMBER=$(($LATEST_BUILD_NUMBER + 1))" >> "$CM_ENV"
       - name: Flutter build ipa
         script: |
-          flutter build ipa --release \
+          flutter build ipa --release --build-number=$NEW_BUILD_NUMBER \
             --export-options-plist=/Users/builder/export_options.plist
     artifacts:
       - build/ios/ipa/*.ipa
