@@ -6,9 +6,9 @@ import 'package:intl/intl.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:pdf/pdf.dart';
-import 'package:pdf/widgets.dart' as pw;
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'pdf_worker.dart';
 
 /// Preference key for "save all scanned pages into a single PDF".
 const combinePagesPrefKey = 'combine_pages';
@@ -50,6 +50,7 @@ class _ScanHomePageState extends State<ScanHomePage> {
   List<File> _pdfFiles = [];
   bool _isScanning = false;
   bool _combinePages = true;
+  PdfProgress? _progress;
 
   @override
   void initState() {
@@ -116,22 +117,17 @@ class _ScanHomePageState extends State<ScanHomePage> {
       final dir = await _scansDir();
       final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
 
-      if (_combinePages) {
-        await _imagesToA4Pdf(
+      await writePdfsInBackground(
+        jobs: buildPdfJobs(
           imagePaths: imagePaths,
-          outputPath: p.join(dir.path, '${timestamp}_${imagePaths.length}p.pdf'),
-        );
-      } else {
-        for (var i = 0; i < imagePaths.length; i++) {
-          await _imagesToA4Pdf(
-            imagePaths: [imagePaths[i]],
-            outputPath: p.join(
-              dir.path,
-              '${timestamp}_page${(i + 1).toString().padLeft(2, '0')}.pdf',
-            ),
-          );
-        }
-      }
+          directory: dir.path,
+          timestamp: timestamp,
+          combinePages: _combinePages,
+        ),
+        onProgress: (progress) {
+          if (mounted) setState(() => _progress = progress);
+        },
+      );
 
       await _loadSavedFiles();
 
@@ -143,6 +139,12 @@ class _ScanHomePageState extends State<ScanHomePage> {
           SnackBar(content: Text(message)),
         );
       }
+    } on PdfGenerationException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('PDFの作成に失敗しました: $e')),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -150,36 +152,13 @@ class _ScanHomePageState extends State<ScanHomePage> {
         );
       }
     } finally {
-      if (mounted) setState(() => _isScanning = false);
+      if (mounted) {
+        setState(() {
+          _isScanning = false;
+          _progress = null;
+        });
+      }
     }
-  }
-
-  /// Writes every image in [imagePaths] as one A4 page of a single PDF.
-  Future<File> _imagesToA4Pdf({
-    required List<String> imagePaths,
-    required String outputPath,
-  }) async {
-    final doc = pw.Document();
-
-    for (final imagePath in imagePaths) {
-      final imageBytes = await File(imagePath).readAsBytes();
-      final pdfImage = pw.MemoryImage(imageBytes);
-      doc.addPage(
-        pw.Page(
-          pageFormat: PdfPageFormat.a4,
-          margin: pw.EdgeInsets.zero,
-          build: (context) {
-            return pw.Center(
-              child: pw.Image(pdfImage, fit: pw.BoxFit.contain),
-            );
-          },
-        ),
-      );
-    }
-
-    final outFile = File(outputPath);
-    await outFile.writeAsBytes(await doc.save());
-    return outFile;
   }
 
   Future<void> _deleteFile(File file) async {
@@ -284,35 +263,43 @@ class _ScanHomePageState extends State<ScanHomePage> {
           ),
         ],
       ),
-      body: _pdfFiles.isEmpty
-          ? const Center(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text(
-                  '右下の「スキャン」ボタンから\nA4の書類を撮影してPDFを作成します',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 16, color: Colors.grey),
-                ),
-              ),
-            )
-          : GridView.builder(
-              padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                childAspectRatio: 0.72,
-                crossAxisSpacing: 12,
-                mainAxisSpacing: 12,
-              ),
-              itemCount: _pdfFiles.length,
-              itemBuilder: (context, index) {
-                final file = _pdfFiles[index];
-                return _PdfCard(
-                  file: file,
-                  onTap: () => OpenFilex.open(file.path),
-                  onLongPress: () => _deleteFile(file),
-                );
-              },
-            ),
+      body: Column(
+        children: [
+          if (_progress != null) _ProgressBanner(progress: _progress!),
+          Expanded(
+            child: _pdfFiles.isEmpty
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text(
+                        '右下の「スキャン」ボタンから\nA4の書類を撮影してPDFを作成します',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 16, color: Colors.grey),
+                      ),
+                    ),
+                  )
+                : GridView.builder(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      childAspectRatio: 0.72,
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                    ),
+                    itemCount: _pdfFiles.length,
+                    itemBuilder: (context, index) {
+                      final file = _pdfFiles[index];
+                      return _PdfCard(
+                        file: file,
+                        onTap: () => OpenFilex.open(file.path),
+                        onLongPress: () => _deleteFile(file),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _isScanning ? null : _startScan,
         icon: _isScanning
@@ -323,6 +310,41 @@ class _ScanHomePageState extends State<ScanHomePage> {
               )
             : const Icon(Icons.document_scanner),
         label: Text(_isScanning ? '処理中...' : 'スキャン'),
+      ),
+    );
+  }
+}
+
+/// Shows how far the background PDF worker has got.
+class _ProgressBanner extends StatelessWidget {
+  const _ProgressBanner({required this.progress});
+
+  final PdfProgress progress;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: colors.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              progress.isSaving
+                  ? 'PDFを書き出し中...'
+                  : '${progress.pagesDone} / ${progress.totalPages} ページを処理中...',
+              style: TextStyle(color: colors.onSecondaryContainer),
+            ),
+            const SizedBox(height: 8),
+            LinearProgressIndicator(
+              // Writing the file reports no progress of its own, so the bar
+              // keeps moving rather than sitting at a misleading 100%.
+              value: progress.isSaving ? null : progress.ratio,
+            ),
+          ],
+        ),
       ),
     );
   }
