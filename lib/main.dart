@@ -13,6 +13,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// Preference key for "save all scanned pages into a single PDF".
 const combinePagesPrefKey = 'combine_pages';
 
+/// Maximum number of pages kept from one scanning session.
+///
+/// Apple's document camera has no page limit of its own, so anything scanned
+/// beyond this is silently dropped by the plugin.
+const maxPagesPerScan = 300;
+
 void main() {
   runApp(const ScanApp());
 }
@@ -92,8 +98,15 @@ class _ScanHomePageState extends State<ScanHomePage> {
     try {
       final List<String>? imagePaths =
           await CunningDocumentScanner.getPictures(
-        noOfPages: 20,
+        noOfPages: maxPagesPerScan,
         scannerSource: ScannerSource.camera,
+        // JPEG pages are embedded into the PDF as-is, while PNG pages are
+        // decoded to raw bitmaps first (tens of MB per page) — which a scan of
+        // this many pages cannot hold in memory.
+        iosScannerOptions: IosScannerOptions(
+          imageFormat: IosImageFormat.jpg,
+          jpgCompressionQuality: 0.8,
+        ),
       );
 
       if (imagePaths == null || imagePaths.isEmpty) {
@@ -231,6 +244,13 @@ class _ScanHomePageState extends State<ScanHomePage> {
                     },
                   ),
                   const Divider(height: 24),
+                  const ListTile(
+                    leading: Icon(Icons.filter_none),
+                    title: Text('1回のスキャンの上限'),
+                    subtitle: Text(
+                      '連続で最大$maxPagesPerScanページまで撮影できます。',
+                    ),
+                  ),
                   const ListTile(
                     leading: Icon(Icons.info_outline),
                     title: Text('撮影タイミング（自動 / 手動）'),
