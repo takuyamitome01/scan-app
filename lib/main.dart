@@ -13,11 +13,16 @@ import 'pdf_worker.dart';
 /// Preference key for "save all scanned pages into a single PDF".
 const combinePagesPrefKey = 'combine_pages';
 
-/// Maximum number of pages kept from one scanning session.
-///
-/// Apple's document camera has no page limit of its own, so anything scanned
-/// beyond this is silently dropped by the plugin.
+/// Maximum number of pages collected for one document, across every camera
+/// session it takes to capture them.
 const maxPagesPerScan = 300;
+
+/// Pages Apple's document camera accepts before it stops taking more.
+///
+/// VisionKit enforces this itself and exposes no way to raise it, so a longer
+/// document is captured by reopening the camera and appending to what is
+/// already collected.
+const visionKitPageLimit = 24;
 
 void main() {
   runApp(const ScanApp());
@@ -97,20 +102,8 @@ class _ScanHomePageState extends State<ScanHomePage> {
   Future<void> _startScan() async {
     setState(() => _isScanning = true);
     try {
-      final List<String>? imagePaths =
-          await CunningDocumentScanner.getPictures(
-        noOfPages: maxPagesPerScan,
-        scannerSource: ScannerSource.camera,
-        // JPEG pages are embedded into the PDF as-is, while PNG pages are
-        // decoded to raw bitmaps first (tens of MB per page) — which a scan of
-        // this many pages cannot hold in memory.
-        iosScannerOptions: IosScannerOptions(
-          imageFormat: IosImageFormat.jpg,
-          jpgCompressionQuality: 0.8,
-        ),
-      );
-
-      if (imagePaths == null || imagePaths.isEmpty) {
+      final imagePaths = await _collectPages();
+      if (imagePaths.isEmpty) {
         return;
       }
 
@@ -159,6 +152,70 @@ class _ScanHomePageState extends State<ScanHomePage> {
         });
       }
     }
+  }
+
+  /// Collects the pages of one document, reopening the camera as needed.
+  ///
+  /// Apple's scanner stops at [visionKitPageLimit] pages, so a session that
+  /// comes back full is taken as a document that may have more to it, and the
+  /// user is offered another round.
+  Future<List<String>> _collectPages() async {
+    final collected = <String>[];
+
+    while (collected.length < maxPagesPerScan) {
+      final imagePaths = await CunningDocumentScanner.getPictures(
+        noOfPages: maxPagesPerScan - collected.length,
+        scannerSource: ScannerSource.camera,
+        // JPEG pages are embedded into the PDF as-is, while PNG pages are
+        // decoded to raw bitmaps first (tens of MB per page) — which a scan of
+        // this many pages cannot hold in memory.
+        iosScannerOptions: IosScannerOptions(
+          imageFormat: IosImageFormat.jpg,
+          jpgCompressionQuality: 0.8,
+        ),
+      );
+
+      // Null means the user backed out of the camera. Anything already
+      // collected is still worth saving.
+      if (imagePaths == null || imagePaths.isEmpty) break;
+
+      collected.addAll(imagePaths);
+
+      if (imagePaths.length < visionKitPageLimit) break;
+      if (collected.length >= maxPagesPerScan) break;
+      if (!mounted) break;
+      if (!await _askToContinueScanning(collected.length)) break;
+    }
+
+    return collected;
+  }
+
+  /// Asks whether to reopen the camera and append more pages to this document.
+  Future<bool> _askToContinueScanning(int pagesSoFar) async {
+    final answer = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('続けてスキャンしますか？'),
+        content: Text(
+          '$pagesSoFarページ読み込みました。\n\n'
+          'iOSのスキャナーは一度に$visionKitPageLimitページまでのため、'
+          '続きがある場合はもう一度カメラを開いて読み込みます。'
+          '読み込んだページは1つのPDFにまとまります。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('ここまでで保存'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('続けてスキャン'),
+          ),
+        ],
+      ),
+    );
+    return answer ?? false;
   }
 
   Future<void> _deleteFile(File file) async {
@@ -225,10 +282,13 @@ class _ScanHomePageState extends State<ScanHomePage> {
                   const Divider(height: 24),
                   const ListTile(
                     leading: Icon(Icons.filter_none),
-                    title: Text('1回のスキャンの上限'),
+                    title: Text('ページ数の上限'),
                     subtitle: Text(
-                      '連続で最大$maxPagesPerScanページまで撮影できます。',
+                      'iOSのスキャナーは一度に$visionKitPageLimitページまでのため、'
+                      'それを超えるときは「続けてスキャン」で読み込みます。'
+                      '1つのPDFにまとめられるのは合計$maxPagesPerScanページまでです。',
                     ),
+                    isThreeLine: true,
                   ),
                   const ListTile(
                     leading: Icon(Icons.info_outline),
