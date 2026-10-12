@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'pdf_worker.dart';
@@ -218,6 +219,95 @@ class _ScanHomePageState extends State<ScanHomePage> {
     return answer ?? false;
   }
 
+  /// Offers what can be done with a saved scan.
+  void _showFileActions(File file) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+                child: Text(
+                  describeScanFile(file.path),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.open_in_new),
+                title: const Text('開く'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  OpenFilex.open(file.path);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.ios_share),
+                title: const Text('共有'),
+                subtitle: const Text('メール、AirDrop、ファイルへの保存など'),
+                onTap: () {
+                  // The anchor has to be measured before the sheet goes away,
+                  // because iPad shows the share sheet as a popover from it.
+                  final origin = _shareOriginOf(sheetContext);
+                  Navigator.pop(sheetContext);
+                  _shareFile(file, origin);
+                },
+              ),
+              ListTile(
+                leading: Icon(
+                  Icons.delete_outline,
+                  color: Theme.of(context).colorScheme.error,
+                ),
+                title: Text(
+                  '削除',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                ),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _deleteFile(file);
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// The rectangle an iPad popover should point at, if it can be measured.
+  Rect? _shareOriginOf(BuildContext context) {
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return null;
+    return box.localToGlobal(Offset.zero) & box.size;
+  }
+
+  Future<void> _shareFile(File file, Rect? origin) async {
+    try {
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path, mimeType: 'application/pdf')],
+          subject: describeScanFile(file.path),
+          sharePositionOrigin: origin,
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('共有に失敗しました: $e')),
+        );
+      }
+    }
+  }
+
   Future<void> _deleteFile(File file) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -353,7 +443,7 @@ class _ScanHomePageState extends State<ScanHomePage> {
                       return _PdfCard(
                         file: file,
                         onTap: () => OpenFilex.open(file.path),
-                        onLongPress: () => _deleteFile(file),
+                        onLongPress: () => _showFileActions(file),
                       );
                     },
                   ),
@@ -452,14 +542,30 @@ class _PdfCard extends StatelessWidget {
         child: Column(
           children: [
             Expanded(
-              child: Container(
-                width: double.infinity,
-                color: Colors.grey.shade200,
-                child: const Icon(
-                  Icons.picture_as_pdf,
-                  size: 48,
-                  color: Colors.redAccent,
-                ),
+              child: Stack(
+                children: [
+                  Container(
+                    width: double.infinity,
+                    color: Colors.grey.shade200,
+                    child: const Icon(
+                      Icons.picture_as_pdf,
+                      size: 48,
+                      color: Colors.redAccent,
+                    ),
+                  ),
+                  // Long-pressing the card does the same, but nothing on
+                  // screen would say so.
+                  Positioned(
+                    top: 0,
+                    right: 0,
+                    child: IconButton(
+                      icon: const Icon(Icons.more_vert),
+                      iconSize: 20,
+                      tooltip: '共有・削除',
+                      onPressed: onLongPress,
+                    ),
+                  ),
+                ],
               ),
             ),
             Padding(
