@@ -90,14 +90,16 @@ class _ScanHomePageState extends State<ScanHomePage> {
 
   Future<void> _loadSavedFiles() async {
     final dir = await _scansDir();
-    final files = dir
-        .listSync()
-        .whereType<File>()
-        .where((f) => f.path.toLowerCase().endsWith('.pdf'))
-        .toList()
-      ..sort((a, b) => b.path.compareTo(a.path));
+    // Ordered by when the scan was made rather than by name, so renaming a
+    // file does not move it. Renaming leaves the timestamp untouched.
+    final entries = [
+      for (final file in dir.listSync().whereType<File>())
+        if (file.path.toLowerCase().endsWith('.pdf'))
+          (file: file, modified: file.statSync().modified),
+    ]..sort((a, b) => b.modified.compareTo(a.modified));
+
     if (!mounted) return;
-    setState(() => _pdfFiles = files);
+    setState(() => _pdfFiles = [for (final entry in entries) entry.file]);
   }
 
   Future<void> _startScan() async {
@@ -248,6 +250,14 @@ class _ScanHomePageState extends State<ScanHomePage> {
                 },
               ),
               ListTile(
+                leading: const Icon(Icons.drive_file_rename_outline),
+                title: const Text('名前を変更'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _renameFile(file);
+                },
+              ),
+              ListTile(
                 leading: const Icon(Icons.ios_share),
                 title: const Text('共有'),
                 subtitle: const Text('メール、AirDrop、ファイルへの保存など'),
@@ -288,6 +298,39 @@ class _ScanHomePageState extends State<ScanHomePage> {
     final box = context.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return null;
     return box.localToGlobal(Offset.zero) & box.size;
+  }
+
+  Future<void> _renameFile(File file) async {
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (context) => _RenameDialog(
+        initialName: p.basenameWithoutExtension(file.path),
+      ),
+    );
+    if (newName == null) return;
+
+    final target = p.join(p.dirname(file.path), '$newName.pdf');
+    if (target == file.path) return;
+
+    if (File(target).existsSync()) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('同じ名前のファイルがすでにあります')),
+        );
+      }
+      return;
+    }
+
+    try {
+      await file.rename(target);
+      await _loadSavedFiles();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('名前の変更に失敗しました: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _shareFile(File file, Rect? origin) async {
@@ -500,13 +543,91 @@ class _ProgressBanner extends StatelessWidget {
   }
 }
 
+/// Rejects a name that cannot be used as a file name, returning the reason to
+/// show the user, or null when the name is fine.
+String? validateScanName(String name) {
+  final trimmed = name.trim();
+  if (trimmed.isEmpty) return '名前を入力してください';
+  if (trimmed.contains(RegExp(r'[/\\:*?"<>|]'))) {
+    return r'/ \ : * ? " < > | は使えません';
+  }
+  if (trimmed.startsWith('.')) return '先頭に「.」は使えません';
+  if (trimmed.length > 100) return '100文字以内にしてください';
+  return null;
+}
+
+/// Asks for a new name for a saved scan, returning it without the extension.
+class _RenameDialog extends StatefulWidget {
+  const _RenameDialog({required this.initialName});
+
+  final String initialName;
+
+  @override
+  State<_RenameDialog> createState() => _RenameDialogState();
+}
+
+class _RenameDialogState extends State<_RenameDialog> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.initialName);
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final error = validateScanName(_controller.text);
+    if (error != null) {
+      setState(() => _error = error);
+      return;
+    }
+    Navigator.pop(context, _controller.text.trim());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('名前を変更'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        textInputAction: TextInputAction.done,
+        onSubmitted: (_) => _submit(),
+        onChanged: (_) {
+          if (_error != null) setState(() => _error = null);
+        },
+        decoration: InputDecoration(
+          labelText: 'ファイル名',
+          suffixText: '.pdf',
+          errorText: _error,
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('キャンセル'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: const Text('変更'),
+        ),
+      ],
+    );
+  }
+}
+
 /// Turns a saved scan's file name into a readable label,
 /// e.g. `20260917_203000_3p.pdf` -> `9/17 20:30・3ページ`.
+///
+/// A name the user chose themselves does not match that shape and is shown
+/// as it is.
 String describeScanFile(String path) {
   final base = p.basenameWithoutExtension(path);
   final match = RegExp(r'^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})\d{2}_(.+)$')
       .firstMatch(base);
-  if (match == null) return p.basename(path);
+  if (match == null) return base;
 
   final when = '${int.parse(match[2]!)}/${int.parse(match[3]!)} '
       '${match[4]}:${match[5]}';
