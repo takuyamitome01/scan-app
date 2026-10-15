@@ -1,15 +1,31 @@
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
 
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
-/// One PDF to produce: every image in [imagePaths] becomes one A4 page of the
-/// file written to [outputPath].
-class PdfJob {
-  const PdfJob({required this.imagePaths, required this.outputPath});
+/// One scanned page on its way into a PDF.
+class ScanPage {
+  const ScanPage({required this.imagePath, this.quarterTurns = 0});
 
-  final List<String> imagePaths;
+  final String imagePath;
+
+  /// Clockwise quarter turns to apply, 0 to 3.
+  final int quarterTurns;
+
+  ScanPage rotatedBy(int turns) => ScanPage(
+        imagePath: imagePath,
+        quarterTurns: (quarterTurns + turns) % 4,
+      );
+}
+
+/// One PDF to produce: every page in [pages] becomes one A4 page of the file
+/// written to [outputPath].
+class PdfJob {
+  const PdfJob({required this.pages, required this.outputPath});
+
+  final List<ScanPage> pages;
   final String outputPath;
 }
 
@@ -96,7 +112,7 @@ Future<void> writePdfsInBackground({
 /// With [combinePages] every scanned page goes into a single file, otherwise
 /// each page becomes a file of its own.
 List<PdfJob> buildPdfJobs({
-  required List<String> imagePaths,
+  required List<ScanPage> pages,
   required String directory,
   required String timestamp,
   required bool combinePages,
@@ -104,20 +120,42 @@ List<PdfJob> buildPdfJobs({
   if (combinePages) {
     return [
       PdfJob(
-        imagePaths: imagePaths,
-        outputPath: '$directory/${timestamp}_${imagePaths.length}p.pdf',
+        pages: pages,
+        outputPath: '$directory/${timestamp}_${pages.length}p.pdf',
       ),
     ];
   }
 
   return [
-    for (var i = 0; i < imagePaths.length; i++)
+    for (var i = 0; i < pages.length; i++)
       PdfJob(
-        imagePaths: [imagePaths[i]],
+        pages: [pages[i]],
         outputPath: '$directory/${timestamp}_page'
             '${(i + 1).toString().padLeft(2, '0')}.pdf',
       ),
   ];
+}
+
+/// Lays [image] out on an A4 page, turned by [page]'s quarter turns.
+///
+/// A quarter turn swaps width for height, so the image is first fitted into a
+/// box of the page's swapped dimensions; rotating that box then lands exactly
+/// on the page instead of overflowing it.
+pw.Widget _pageContent(pw.ImageProvider image, ScanPage page) {
+  final fitted = pw.Image(image, fit: pw.BoxFit.contain);
+  if (page.quarterTurns % 4 == 0) return fitted;
+
+  const format = PdfPageFormat.a4;
+  final sideways = page.quarterTurns.isOdd;
+
+  return pw.Transform.rotateBox(
+    angle: page.quarterTurns * math.pi / 2,
+    child: pw.SizedBox(
+      width: sideways ? format.height : format.width,
+      height: sideways ? format.width : format.height,
+      child: fitted,
+    ),
+  );
 }
 
 /// Sentinel the worker sends once every job has been written.
@@ -134,22 +172,20 @@ class _PdfWorkerRequest {
 Future<void> _pdfWorkerEntry(_PdfWorkerRequest request) async {
   final sendPort = request.sendPort;
   try {
-    final totalPages = request.jobs
-        .fold<int>(0, (sum, job) => sum + job.imagePaths.length);
+    final totalPages =
+        request.jobs.fold<int>(0, (sum, job) => sum + job.pages.length);
     var pagesDone = 0;
 
     for (final job in request.jobs) {
       final doc = pw.Document();
 
-      for (final imagePath in job.imagePaths) {
-        final image = pw.MemoryImage(await File(imagePath).readAsBytes());
+      for (final page in job.pages) {
+        final image = pw.MemoryImage(await File(page.imagePath).readAsBytes());
         doc.addPage(
           pw.Page(
             pageFormat: PdfPageFormat.a4,
             margin: pw.EdgeInsets.zero,
-            build: (context) => pw.Center(
-              child: pw.Image(image, fit: pw.BoxFit.contain),
-            ),
+            build: (context) => pw.Center(child: _pageContent(image, page)),
           ),
         );
         pagesDone++;

@@ -10,6 +10,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'pdf_worker.dart';
+import 'scan_review_page.dart';
 
 /// Preference key for "save all scanned pages into a single PDF".
 const combinePagesPrefKey = 'combine_pages';
@@ -106,7 +107,23 @@ class _ScanHomePageState extends State<ScanHomePage> {
     setState(() => _isScanning = true);
     try {
       final imagePaths = await _collectPages();
-      if (imagePaths.isEmpty) {
+      if (imagePaths.isEmpty || !mounted) {
+        return;
+      }
+
+      final pages = await Navigator.of(context).push<List<ScanPage>>(
+        MaterialPageRoute(
+          builder: (_) => ScanReviewPage(
+            initialPages: [
+              for (final path in imagePaths) ScanPage(imagePath: path),
+            ],
+            onAddPages: _scanOnce,
+            maxPages: maxPagesPerScan,
+          ),
+        ),
+      );
+      // Null means the review screen was dismissed without saving.
+      if (pages == null || pages.isEmpty) {
         return;
       }
 
@@ -115,7 +132,7 @@ class _ScanHomePageState extends State<ScanHomePage> {
 
       await writePdfsInBackground(
         jobs: buildPdfJobs(
-          imagePaths: imagePaths,
+          pages: pages,
           directory: dir.path,
           timestamp: timestamp,
           combinePages: _combinePages,
@@ -129,8 +146,8 @@ class _ScanHomePageState extends State<ScanHomePage> {
 
       if (mounted) {
         final message = _combinePages
-            ? '${imagePaths.length}ページを1つのPDFに保存しました'
-            : '${imagePaths.length}個のPDFを保存しました';
+            ? '${pages.length}ページを1つのPDFに保存しました'
+            : '${pages.length}個のPDFを保存しました';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(message)),
         );
@@ -166,21 +183,13 @@ class _ScanHomePageState extends State<ScanHomePage> {
     final collected = <String>[];
 
     while (collected.length < maxPagesPerScan) {
-      final imagePaths = await CunningDocumentScanner.getPictures(
-        noOfPages: maxPagesPerScan - collected.length,
-        scannerSource: ScannerSource.camera,
-        // JPEG pages are embedded into the PDF as-is, while PNG pages are
-        // decoded to raw bitmaps first (tens of MB per page) — which a scan of
-        // this many pages cannot hold in memory.
-        iosScannerOptions: IosScannerOptions(
-          imageFormat: IosImageFormat.jpg,
-          jpgCompressionQuality: 0.8,
-        ),
+      final imagePaths = await _scanOnce(
+        limit: maxPagesPerScan - collected.length,
       );
 
-      // Null means the user backed out of the camera. Anything already
-      // collected is still worth saving.
-      if (imagePaths == null || imagePaths.isEmpty) break;
+      // Empty means the user backed out of the camera. Anything already
+      // collected is still worth keeping.
+      if (imagePaths.isEmpty) break;
 
       collected.addAll(imagePaths);
 
@@ -191,6 +200,22 @@ class _ScanHomePageState extends State<ScanHomePage> {
     }
 
     return collected;
+  }
+
+  /// Opens the document camera once, returning the pages it captured.
+  Future<List<String>> _scanOnce({int limit = visionKitPageLimit}) async {
+    final imagePaths = await CunningDocumentScanner.getPictures(
+      noOfPages: limit,
+      scannerSource: ScannerSource.camera,
+      // JPEG pages are embedded into the PDF as-is, while PNG pages are
+      // decoded to raw bitmaps first (tens of MB per page) — which a scan of
+      // this many pages cannot hold in memory.
+      iosScannerOptions: IosScannerOptions(
+        imageFormat: IosImageFormat.jpg,
+        jpgCompressionQuality: 0.8,
+      ),
+    );
+    return imagePaths ?? const [];
   }
 
   /// Asks whether to reopen the camera and append more pages to this document.
