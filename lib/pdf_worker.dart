@@ -136,6 +136,15 @@ List<PdfJob> buildPdfJobs({
   ];
 }
 
+/// The PDF-space angle that turns a page the same way the review screen
+/// showed it for [quarterTurns] of Flutter's `RotatedBox`.
+///
+/// PDF's Y axis points up, so a positive angle turns counter-clockwise —
+/// the opposite of `RotatedBox`, which turns clockwise on screen. Without the
+/// flipped sign a quarter turn comes out 180 degrees from the preview, which
+/// reads as the page having been saved upside down.
+double pdfRotationFor(int quarterTurns) => -(quarterTurns % 4) * math.pi / 2;
+
 /// Lays [image] out on an A4 page, turned by [page]'s quarter turns.
 ///
 /// A quarter turn swaps width for height, so the image is first fitted into a
@@ -149,7 +158,7 @@ pw.Widget _pageContent(pw.ImageProvider image, ScanPage page) {
   final sideways = page.quarterTurns.isOdd;
 
   return pw.Transform.rotateBox(
-    angle: page.quarterTurns * math.pi / 2,
+    angle: pdfRotationFor(page.quarterTurns),
     child: pw.SizedBox(
       width: sideways ? format.height : format.width,
       height: sideways ? format.width : format.height,

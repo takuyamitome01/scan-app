@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
@@ -9,6 +10,21 @@ import 'package:scan_app/pdf_worker.dart';
 import 'test_images.dart';
 
 void main() {
+  group('pdfRotationFor', () {
+    test('turns clockwise, the way RotatedBox does on screen', () {
+      // PDF's Y axis points up, so clockwise is the negative direction.
+      // Getting this sign wrong saves the page 180 degrees off the preview.
+      expect(pdfRotationFor(1), closeTo(-math.pi / 2, 1e-9));
+      expect(pdfRotationFor(2), closeTo(-math.pi, 1e-9));
+      expect(pdfRotationFor(3), closeTo(-3 * math.pi / 2, 1e-9));
+    });
+
+    test('treats no turns and a full circle alike', () {
+      expect(pdfRotationFor(0), 0);
+      expect(pdfRotationFor(4), 0);
+    });
+  });
+
   group('ScanPage.rotatedBy', () {
     test('accumulates turns and wraps around a full circle', () {
       const page = ScanPage(imagePath: '/tmp/a.jpg');
